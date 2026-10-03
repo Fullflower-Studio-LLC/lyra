@@ -69,7 +69,8 @@ describe("Locks", function()
 				getLock()
 				local lock2Promise = acquireLock()
 
-				for _ = 1, 35 do
+				-- Acquisition keeps trying for the duration plus a grace period.
+				for _ = 1, 55 do
 					jest.advanceTimersByTime(1000)
 				end
 				return expect(lock2Promise).rejects.toMatch("Failed to acquire lock")
@@ -263,7 +264,90 @@ describe("Locks", function()
 			end)
 		end)
 
+		describe("failing refreshes", function()
+			local function failRefreshes(count: number?)
+				local failures = 0
+				local updateMock, realUpdate = MockMemoryStoreService.mockHashMapMethod(mockMemory, "UpdateAsync", jest)
+				updateMock.mockImplementation(function(...)
+					if count == nil or failures < count then
+						failures += 1
+						error("simulated outage")
+					end
+					return realUpdate(...)
+				end)
+			end
+
+			it("keeps the lock when a refresh errors and a later retry succeeds", function()
+				local lock = getLock("testKey", { duration = 30, refreshInterval = 5 })
+				local lost, onLost = jest.fn()
+				local losing, onLosing = jest.fn()
+				lock.onLockLost(onLost)
+				lock.beforeLockLost(onLosing)
+
+				failRefreshes(3)
+				for _ = 1, 60 do
+					jest.advanceTimersByTime(1000)
+				end
+
+				expect(lock.isLocked()).toBe(true)
+				expect(lost).toBeCalledTimes(0)
+				expect(losing).toBeCalledTimes(0)
+			end)
+
+			it("runs beforeLockLost while the lock is still held, then onLockLost", function()
+				local lock = getLock("testKey", { duration = 30, refreshInterval = 5 })
+				local order = {}
+				local heldDuringFinalSave
+				lock.beforeLockLost(function()
+					heldDuringFinalSave = lock.isLocked()
+					table.insert(order, "beforeLockLost")
+					return Promise.resolve()
+				end)
+				lock.onLockLost(function()
+					table.insert(order, "onLockLost")
+				end)
+
+				failRefreshes()
+				for _ = 1, 40 do
+					jest.advanceTimersByTime(1000)
+				end
+
+				expect(order).toEqual({ "beforeLockLost", "onLockLost" })
+				expect(heldDuringFinalSave).toBe(true)
+				expect(lock.isLocked()).toBe(false)
+			end)
+
+			it("loses the lock without beforeLockLost when another holder has it", function()
+				local lock = getLock("testKey", { duration = 30, refreshInterval = 5 })
+				local lost, onLost = jest.fn()
+				local losing, onLosing = jest.fn()
+				lock.onLockLost(onLost)
+				lock.beforeLockLost(onLosing)
+
+				local updateMock = MockMemoryStoreService.mockHashMapMethod(mockMemory, "UpdateAsync", jest)
+				updateMock.mockImplementation(function()
+					return nil
+				end)
+				jest.advanceTimersByTime(5000 + 100)
+
+				expect(lost).toBeCalledTimes(1)
+				expect(losing).toBeCalledTimes(0)
+			end)
+		end)
+
 		describe("error handling", function()
+			it("should acquire a stale lock soon after it expires", function()
+				-- A crashed holder: acquired, never refreshed or released.
+				getLock("testKey", { duration = 30, refreshInterval = 1000 })
+
+				local lock2Promise = acquireLock("testKey", { duration = 30 })
+				for _ = 1, 40 do
+					jest.advanceTimersByTime(1000)
+				end
+
+				return expect(lock2Promise).resolves.toBeDefined()
+			end)
+
 			it("should reject if lock cannot be acquired within duration", function()
 				getLock()
 
@@ -401,7 +485,8 @@ describe("Locks", function()
 				jest.advanceTimersByTime(100)
 			end
 
-			for _ = 1, 35 do
+			-- Losers keep trying for the duration plus a grace period.
+			for _ = 1, 55 do
 				jest.advanceTimersByTime(1000)
 			end
 

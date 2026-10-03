@@ -119,6 +119,9 @@ export type MigrationStep = {
 	.logger Logger -- A `Logger` instance used for internal logging within the store and its components.
 	.onLockLost ((key: string) -> ())? -- An optional callback function triggered if the distributed lock for a key is lost unexpectedly (e.g., due to expiration or external interference).
 	.useDSSLocking boolean -- Whether to use DataStoreService for distributed locking instead of MemoryStoreService.
+	.lockDuration number? -- Lock time-to-live in seconds. Defaults to `Constants.LOCK_DURATION_SECONDS`.
+	.lockRefreshInterval number? -- How often a held lock is refreshed, in seconds. Defaults to `Constants.LOCK_REFRESH_INTERVAL_SECONDS`.
+	.autosaveInterval number? -- How often sessions autosave, in seconds. Defaults to `Constants.AUTOSAVE_INTERVAL_SECONDS`.
 
 	.recordStore DataStore -- The DataStore used to store `DataStoreRecord` objects.
 	.shardStore DataStore -- The DataStore used to store the actual data shards for large files.
@@ -140,6 +143,9 @@ export type StoreContext<T> = {
 	logger: Log.Logger,
 	onLockLost: ((key: string) -> ())?,
 	useDSSLocking: boolean,
+	lockDuration: number?,
+	lockRefreshInterval: number?,
+	autosaveInterval: number?,
 
 	recordStore: DataStore,
 	shardStore: DataStore,

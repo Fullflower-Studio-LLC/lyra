@@ -477,8 +477,8 @@ function Session.load<T>(params: LoadSessionParams<T>): Promise.TPromise<Session
 	local acquireLockParams: Locks.AcquireLockParams = {
 		storeContext = ctx,
 		key = params.key,
-		duration = Constants.LOCK_DURATION_SECONDS,
-		refreshInterval = Constants.LOCK_REFRESH_INTERVAL_SECONDS,
+		duration = ctx.lockDuration or Constants.LOCK_DURATION_SECONDS,
+		refreshInterval = ctx.lockRefreshInterval or Constants.LOCK_REFRESH_INTERVAL_SECONDS,
 	}
 
 	return Locks.acquireLock(acquireLockParams):andThen(function(lockHandle)
@@ -521,6 +521,12 @@ function Session.load<T>(params: LoadSessionParams<T>): Promise.TPromise<Session
 				if ctx.onLockLost then
 					ctx.onLockLost(params.key)
 				end
+			end)
+
+			-- If refreshes keep failing, save once more while the lock is still owned.
+			lockHandle.beforeLockLost(function()
+				logger:log("warn", "lock is about to be lost, attempting a final save")
+				return session:save()
 			end)
 
 			-- 6. Initiate orphan cleanup for files found during load
@@ -827,7 +833,7 @@ function Session:startAutosaving(): ()
 		while true do
 			-- Wait for the configured interval
 			-- This is at the top of the loop to ensure the first wait is immediate - we just loaded the session.
-			task.wait(Constants.AUTOSAVE_INTERVAL_SECONDS)
+			task.wait(self.ctx.autosaveInterval or Constants.AUTOSAVE_INTERVAL_SECONDS)
 			-- Check if stopped or closed during wait
 			if self.closed or stop then
 				logger:log("trace", "autosave loop stopping", { closed = self.closed, stop = stop })

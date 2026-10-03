@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 (ffs-utils/lyra, Fullflower fork)
+* Lock refreshes that error are retried every 2 seconds for as long as the lock is still held. Before, one failed retry cycle (about 15 seconds with DSS locking) gave up the lock while about 15 seconds of it were still left.
+* Added `LockHandle.beforeLockLost`. When less than 15 seconds are left on a lock whose refreshes keep failing, these callbacks run while the lock is still owned, before `onLockLost`. Sessions use it to make a final save. When another holder has taken the lock, it is lost immediately with no final save.
+* Lock acquisition keeps trying for the lock duration plus 20 seconds, with backoff capped at 5 seconds, so a stale lock left by a crashed server can be taken soon after it expires.
+* Added `lockDuration`, `lockRefreshInterval` and `autosaveInterval` to `createStore` and `createPlayerStore`. The defaults are unchanged: 90, 60 and 300 seconds.
+* Removed the Studio-only bypass that ignored existing locks.
+* Removed an empty `useDSSLocking` branch in `acquireLock`.
+
 ## 0.6.0
 * Added `updateImmutable`, `updateImmutableAsync`, `txImmutable`, `txImmutableAsync` APIs
   * This 'immutable' flavor of API lets you avoid deep copying, but forces you to handle copy-on-write semantics yourself. Instead of returning `true` to commit a change, you return a new copy of the data containing the desired changes.
