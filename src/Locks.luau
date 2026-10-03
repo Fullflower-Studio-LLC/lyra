@@ -17,7 +17,6 @@
 ]=]
 
 local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
 
 -- Small buffer subtracted from the TTL when calculating the local expiry time.
 -- This helps account for potential clock skew or network latency, reducing the
@@ -31,9 +30,6 @@ local Constants = require(script.Parent.Constants)
 
 local dataStoreRetry = require(script.Parent.dataStoreRetry)
 local hashMapRetry = require(script.Parent.hashMapRetry)
-
--- Conditional flag to determine if running in Studio environment.
-local isStudio = RunService:IsStudio()
 
 --[=[
 	Possible states of the lock acquisition and holding process.
@@ -167,11 +163,6 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 				if lockAge >= params.duration then
 					otherLockId = nil
 				end
-			end
-
-			if isStudio then
-				-- In Studio, ignore existing locks to facilitate testing.
-				otherLockId = nil
 			end
 
 			if otherLockId == nil or otherLockId == lockId then

@@ -1,13 +1,13 @@
 [package]
-name = "paradoxum-games/lyra"
+name = "ffs-utils/lyra"
 description = "Advanced player data management with a simple API"
-version = "0.6.1"
+version = "0.7.0"
 license = "MIT"
 authors = ["nomer888", "outofbears"]
 realm = "shared"
-registry = "https://github.com/UpliftGames/wally-index"
+registry = "https://github.com/Fullflower-Studio-LLC/wally-index"
 homepage = "https://paradoxum-games.github.io/lyra/"
-repository = "https://github.com/paradoxum-games/lyra"
+repository = "https://github.com/Fullflower-Studio-LLC/lyra"
 exclude = ["*"]
 include = [
 	"src",
