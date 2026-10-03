@@ -29,6 +29,14 @@ local INTERNAL_SPACE_RESERVE_BYTES = 10_000
 	.LOCK_DURATION_SECONDS number -- The initial time-to-live (TTL) duration (in seconds) for a lock acquired in MemoryStore. If the lock isn't refreshed within this time, it will automatically expire. Must be longer than LOCK_REFRESH_INTERVAL_SECONDS to allow time for refreshes.
 
 	.AUTOSAVE_INTERVAL_SECONDS number -- How often (in seconds) the automatic saving mechanism should attempt to save dirty session data.
+
+	.LOCK_ACQUIRE_GRACE_SECONDS number -- How long (in seconds) past the lock duration to keep trying to acquire a lock, so a stale lock left by a crashed server has time to expire before acquisition gives up.
+
+	.LOCK_ACQUIRE_MAX_BACKOFF_SECONDS number -- The longest wait (in seconds) between lock acquisition attempts.
+
+	.LOCK_REFRESH_RETRY_SECONDS number -- How long (in seconds) to wait between attempts when a lock refresh fails with an error.
+
+	.LOCK_FINAL_SAVE_WINDOW_SECONDS number -- When refreshes keep failing, how long (in seconds) before the lock's confirmed expiry to stop retrying and attempt a final save while the lock is still owned.
 ]=]
 local Constants = {
 	RECORD_SCOPE = "lyra/records",
@@ -43,6 +51,14 @@ local Constants = {
 	LOCK_DURATION_SECONDS = 90,
 
 	AUTOSAVE_INTERVAL_SECONDS = 5 * 60, -- 5 minutes
+
+	LOCK_ACQUIRE_GRACE_SECONDS = 20,
+
+	LOCK_ACQUIRE_MAX_BACKOFF_SECONDS = 5,
+
+	LOCK_REFRESH_RETRY_SECONDS = 2,
+
+	LOCK_FINAL_SAVE_WINDOW_SECONDS = 15,
 }
 
 return Constants

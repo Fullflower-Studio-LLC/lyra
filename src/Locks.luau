@@ -52,11 +52,13 @@ type LockStatus = "acquiring" | "held" | "released"
 	.release () -> Promise -- Releases the lock immediately. Stops the refresh loop and attempts to clear the lock key in MemoryStore (by setting TTL to 0). Resolves when the release attempt is complete.
 	.isLocked () -> boolean -- Checks if the lock is currently considered held locally. This checks both the internal status and compares the last confirmed expiry time (from MemoryStore) against the current local time. True if the lock is believed to be held.
 	.onLockLost (() -> ()) -> (() -> ()) -- Registers a callback function to be invoked if the lock is lost unexpectedly (e.g., refresh fails, TTL expires). Returns a function to disconnect/unregister the callback.
+	.beforeLockLost (() -> Promise?) -> (() -> ()) -- Registers a callback invoked when refreshes have kept failing and the lock is about to expire, while it is still held. A returned Promise is awaited (bounded by the time left on the lock) before `onLockLost` callbacks run. Not invoked when another holder takes the lock. Returns a function to unregister the callback.
 ]=]
 export type LockHandle = {
 	release: () -> Promise.Promise,
 	isLocked: () -> boolean,
 	onLockLost: (callback: () -> ()) -> () -> (),
+	beforeLockLost: (callback: () -> Promise.Promise?) -> () -> (),
 }
 
 --[=[
@@ -93,6 +95,8 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 	local lockId = HttpService:GenerateGUID(false)
 	-- List of callbacks to invoke if the lock is lost.
 	local expiredCallbacks: { () -> () } = {}
+	-- Callbacks to run while the lock is still held, when refreshes keep failing.
+	local losingCallbacks: { () -> Promise.Promise? } = {}
 	-- Handle for the `task.delay` used to trigger expiry callbacks locally.
 	local expiryThread: thread? = nil
 	-- Promise representing the background refresh loop.
@@ -290,7 +294,9 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 		local acquisitionStartTime = os.clock()
 		local currentRetryHandle: Types.RetryHandle<Promise.TPromise<any>>? = nil
 		local attemptCount = 0
-		local maxAcquisitionTime = params.duration -- Use lock duration as acquisition timeout
+		-- Keep trying past the lock duration, so a stale lock left by a crashed server can
+		-- expire before we give up.
+		local maxAcquisitionTime = params.duration + Constants.LOCK_ACQUIRE_GRACE_SECONDS
 
 		return Promise.new(function(resolve, reject, onCancel)
 			-- Setup cancellation handler: clean up any pending retry and release the lock.
@@ -354,8 +360,9 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 						return -- Exit loop if cancelled
 					end
 
-					-- Exponential backoff before next attempt, capped at 30s.
-					local retryAfter = math.min(2 ^ (attemptCount - 1), 30)
+					-- Exponential backoff before next attempt, capped so an attempt lands soon
+					-- after a stale lock expires.
+					local retryAfter = math.min(2 ^ (attemptCount - 1), Constants.LOCK_ACQUIRE_MAX_BACKOFF_SECONDS)
 					logger:log("trace", `waiting {retryAfter}s before next attempt`)
 					task.wait(retryAfter)
 				end
@@ -367,6 +374,92 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 		end)
 	end
 
+	-- The in-flight refresh attempt, if any, so cancelling the refresh loop can cancel it.
+	local currentRefreshHandle: Types.RetryHandle<Promise.TPromise<any>>? = nil
+
+	--[=[
+		Runs `beforeLockLost` callbacks, waiting for any returned Promises until
+		the lock's confirmed expiry.
+		@within Locks
+		@private
+	]=]
+	local function runLosingCallbacks()
+		local promises = {}
+		for _, callback in table.clone(losingCallbacks) do
+			local ok, result = pcall(callback)
+			if not ok then
+				logger:log("error", "beforeLockLost callback errored", { error = result })
+			elseif Promise.is(result) then
+				table.insert(promises, result)
+			end
+		end
+
+		if #promises == 0 then
+			return
+		end
+
+		local timeLeft = math.max((lastConfirmedExpiry or 0) - os.clock(), 0)
+		Promise.allSettled(promises):timeout(timeLeft):await()
+	end
+
+	--[=[
+		Refreshes the lock. A refresh that errors (e.g. during a DataStore outage) is
+		retried for as long as the lock is still held, instead of giving the lock up
+		after a single retry cycle. Once the lock is close to expiring,
+		`beforeLockLost` callbacks get a last chance to save while it is still owned.
+		A refresh that finds the key held by someone else loses the lock immediately,
+		without them.
+
+		@return "refreshed" | "stopped" | "lost"
+		@within Locks
+		@private
+	]=]
+	local function refreshUntilExpiry(onCancelLoop: () -> boolean): "refreshed" | "stopped" | "lost"
+		while true do
+			logger:log("trace", "attempting lock refresh")
+			currentRefreshHandle = tryUpdate(params.duration)
+			local resolved, value = (currentRefreshHandle :: any).promise:await()
+			currentRefreshHandle = nil
+
+			if onCancelLoop() or status ~= "held" then
+				logger:log("trace", "exiting refresh loop, status changed during refresh attempt")
+				return "stopped"
+			end
+
+			if resolved and value ~= nil then
+				logger:log("trace", "lock refreshed successfully")
+				return "refreshed"
+			end
+
+			if resolved then
+				logger:log("warn", "lock is held by another holder, lock considered lost")
+				spawnExpiryCallbacks()
+				return "lost"
+			end
+
+			local timeLeft = (lastConfirmedExpiry or 0) - os.clock()
+			if timeLeft <= Constants.LOCK_FINAL_SAVE_WINDOW_SECONDS then
+				logger:log("warn", "lock refresh keeps failing, running beforeLockLost callbacks before it expires", {
+					error = value,
+					timeLeft = timeLeft,
+				})
+				runLosingCallbacks()
+				spawnExpiryCallbacks()
+				return "lost"
+			end
+
+			logger:log("warn", "failed to refresh lock, retrying while it is still held", {
+				error = value,
+				timeLeft = timeLeft,
+			})
+			task.wait(Constants.LOCK_REFRESH_RETRY_SECONDS)
+
+			if onCancelLoop() or status ~= "held" then
+				return "stopped"
+			end
+		end
+	end
+
 	--[=[
 		Starts the background loop responsible for periodically refreshing the lock TTL.
 		@within Locks
@@ -374,8 +467,6 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 	]=]
 	local function setupLockRefresh(): ()
 		logger:log("trace", "setting up background lock refresh loop")
-
-		local currentRefreshHandle: Types.RetryHandle<Promise.TPromise<any>>? = nil
 
 		-- Create a promise representing the refresh loop's lifetime.
 		refreshPromise = Promise.new(function(resolveLoop, _, onCancelLoop)
@@ -402,27 +493,8 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 						break
 					end
 
-					logger:log("trace", "attempting lock refresh")
-					-- Attempt to update the lock TTL using tryUpdate.
-					currentRefreshHandle = tryUpdate(params.duration)
-					-- Await the result of the refresh attempt
-					local resolved, value = (currentRefreshHandle :: any).promise:await()
-					currentRefreshHandle = nil -- Clear handle once settled
-
-					-- Check status again after the refresh attempt.
-					if status ~= "held" then
-						logger:log("trace", "exiting refresh loop, status changed during refresh attempt")
+					if refreshUntilExpiry(onCancelLoop) ~= "refreshed" then
 						break
-					end
-
-					-- If refresh failed (rejected or returned nil), the lock is lost.
-					if not resolved or value == nil then
-						logger:log("warn", "failed to refresh lock, lock considered lost", { error = value })
-						-- Trigger expiry callbacks and exit the loop.
-						spawnExpiryCallbacks()
-						break
-					else
-						logger:log("trace", "lock refreshed successfully")
 					end
 				end
 
@@ -448,6 +520,15 @@ local function acquireLock(params: AcquireLockParams): Promise.TPromise<LockHand
 				local idx = table.find(expiredCallbacks, callback)
 				if idx then
 					table.remove(expiredCallbacks, idx)
+				end
+			end
+		end,
+		beforeLockLost = function(callback: () -> Promise.Promise?): () -> ()
+			table.insert(losingCallbacks, callback)
+			return function()
+				local idx = table.find(losingCallbacks, callback)
+				if idx then
+					table.remove(losingCallbacks, idx)
 				end
 			end
 		end,
@@ -508,7 +589,8 @@ local function probeLockActive(params: ProbeLockActiveParams): Promise.TPromise<
 		retryPromise = dataStoreRetry(function()
 			local value, keyInfo = (ctx.lockHashMap :: DataStore):GetAsync(key)
 
-			if keyInfo and (os.time() - keyInfo.UpdatedTime / 1000) >= Constants.LOCK_DURATION_SECONDS then
+			local duration = ctx.lockDuration or Constants.LOCK_DURATION_SECONDS
+			if keyInfo and (os.time() - keyInfo.UpdatedTime / 1000) >= duration then
 				value = nil
 			end
 

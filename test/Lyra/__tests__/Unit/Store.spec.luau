@@ -74,6 +74,19 @@ describe("Store", function()
 			expect(ctx.memoryStoreService).toBe(mockMemory)
 		end)
 
+		it("passes lock and autosave timings to the context", function()
+			local timed = makeStore({ lockDuration = 120, lockRefreshInterval = 30, autosaveInterval = 60 })
+			expect(timed._ctx.lockDuration).toBe(120)
+			expect(timed._ctx.lockRefreshInterval).toBe(30)
+			expect(timed._ctx.autosaveInterval).toBe(60)
+		end)
+
+		it("throws if lockRefreshInterval is not shorter than lockDuration", function()
+			expect(function()
+				makeStore({ lockDuration = 30, lockRefreshInterval = 30 })
+			end).toThrow("lockRefreshInterval must be shorter than lockDuration")
+		end)
+
 		it("throws an error if the template fails schema validation", function()
 			local err = "schema validation failed"
 			local fn = function()
@@ -568,6 +581,27 @@ describe("Store", function()
 			jest.advanceTimersByTime(1000)
 
 			return expect(data).resolves.toEqual({ coins = 999, inventory = {} })
+		end)
+
+		it("autosaves at the configured interval", function()
+			store = makeStore({ autosaveInterval = 10 })
+			store:load("player1")
+			jest.advanceTimersByTime(1000)
+			store:update("player1", function(data)
+				data.coins = 7
+				return true
+			end)
+			for _ = 1, 12 do
+				jest.advanceTimersByTime(1000)
+			end
+
+			crash()
+
+			store:load("player1")
+			local data = store:get("player1")
+			jest.advanceTimersByTime(1000)
+
+			return expect(data).resolves.toEqual({ coins = 7, inventory = {} })
 		end)
 
 		it("no-ops if there are no changes to save", function()

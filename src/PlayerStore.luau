@@ -108,6 +108,10 @@ type PlayerStoreProps<T> = {
 	.logCallback ((logMessage: LogMessage) -> ())? -- Optional callback for log messages
 	.memoryStoreService MemoryStoreService? -- Optional MemoryStoreService instance for mocking
 	.dataStoreService DataStoreService? -- Optional DataStoreService instance for mocking
+	.useDSSLocking boolean? -- Use DataStoreService instead of MemoryStoreService for session locks
+	.lockDuration number? -- Lock time-to-live in seconds (default 90)
+	.lockRefreshInterval number? -- How often a held lock is refreshed, in seconds (default 60)
+	.autosaveInterval number? -- How often loaded sessions save, in seconds (default 300)
 
 	@within PlayerStore
 ]=]
@@ -115,6 +119,9 @@ type PlayerStoreConfig<T> = {
 	name: string,
 	template: T,
 	useDSSLocking: boolean?,
+	lockDuration: number?,
+	lockRefreshInterval: number?,
+	autosaveInterval: number?,
 	schema: (value: any) -> (boolean, string?),
 	migrationSteps: { Types.MigrationStep }?,
 	importLegacyData: ((key: string) -> any?)?,
@@ -170,6 +177,9 @@ local function createPlayerStore<T>(config: PlayerStoreConfig<T>): PlayerStore<T
 		template = config.template,
 		schema = config.schema,
 		useDSSLocking = config.useDSSLocking,
+		lockDuration = config.lockDuration,
+		lockRefreshInterval = config.lockRefreshInterval,
+		autosaveInterval = config.autosaveInterval,
 		migrationSteps = config.migrationSteps,
 		importLegacyData = config.importLegacyData,
 		changedCallbacks = config.changedCallbacks,
