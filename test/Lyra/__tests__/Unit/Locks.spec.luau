@@ -485,7 +485,8 @@ describe("Locks", function()
 				jest.advanceTimersByTime(100)
 			end
 
-			for _ = 1, 35 do
+			-- Losers keep trying for the duration plus a grace period.
+			for _ = 1, 55 do
 				jest.advanceTimersByTime(1000)
 			end
 
